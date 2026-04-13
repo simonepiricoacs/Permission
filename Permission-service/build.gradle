@@ -96,8 +96,11 @@ waterDescriptor {
     displayName = 'Permission Service'
     description = 'Permission management and access control enforcement for Water Framework entities'
 
-    input {
+    output {
         standardPin 'jdbc'
+    }
+
+    input {
         standardPin 'service-discovery'
     }
 }
