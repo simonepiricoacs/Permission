@@ -68,6 +68,7 @@ waterDescriptor {
     moduleId    = 'it.water.permission.integration'
     displayName = 'Permission Service Integration Client'
     description = 'Remote REST integration client for permission and access control checks across Water Framework microservices'
+    componentsPackage = 'it.water.permission.service.integration'
 
     output {
         pin('it.water.integration.permission') {}

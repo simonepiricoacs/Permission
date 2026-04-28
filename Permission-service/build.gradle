@@ -95,6 +95,9 @@ waterDescriptor {
     moduleId    = 'it.water.permission'
     displayName = 'Permission Service'
     description = 'Permission management and access control enforcement for Water Framework entities'
+    componentsPackage = 'it.water.permission.service'
+    repositoryPackage = 'it.water.permission.repository'
+    entitiesPackage   = 'it.water.permission.model'
 
     output {
         standardPin 'jdbc'
