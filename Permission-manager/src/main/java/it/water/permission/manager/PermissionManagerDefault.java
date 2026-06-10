@@ -90,7 +90,7 @@ public class PermissionManagerDefault implements PermissionManager {
      */
     @Override
     public boolean userHasRoles(String username, String[] rolesNames) {
-        if (username == null || username.length() == 0)
+        if (username == null || username.isEmpty())
             return false;
         Collection<String> rolesNamesCollection = Arrays.asList(rolesNames);
         User u = userIntegrationClient.fetchUserByUsername(username);
@@ -390,7 +390,8 @@ public class PermissionManagerDefault implements PermissionManager {
         // looks up for a persisted entity in the hierarchy chain
         if (entity instanceof OwnedResource ownedResource) {
             resourceOwnerId = ownedResource.getOwnerUserId();
-            if (resourceOwnerDoesNotMatch(resourceOwnerId, user, userSharesResource)) {
+            // transient entities (id == 0) have no owner yet: handled by doCheckUserOwnsResource
+            if (entity.getId() != 0 && resourceOwnerDoesNotMatch(resourceOwnerId, user, userSharesResource)) {
                 return false;
             }
         }
@@ -398,26 +399,40 @@ public class PermissionManagerDefault implements PermissionManager {
     }
 
     private boolean resourceOwnerDoesNotMatch(Long resourceOwnerId, User user, boolean userSharesResource) {
-        return !userSharesResource && resourceOwnerId != null && resourceOwnerId.longValue() != 0
-                && user.getId() != resourceOwnerId.longValue();
+        // default-deny: a persisted OwnedResource with null/0 owner belongs to nobody (H5)
+        if (userSharesResource)
+            return false;
+        if (resourceOwnerId == null || resourceOwnerId.longValue() == 0L)
+            return true;
+        return user.getId() != resourceOwnerId.longValue();
     }
 
     private boolean doCheckUserOwnsResource(User user, Long resourceOwnerId, Object resource, BaseEntity entity, boolean userSharesResource) {
-        if (entity.getId() == 0)
+        // create path: owner is assigned at persistence time, decision delegated to the permission check
+        if (entity.getId() == 0) {
             return true;
+        }
         // load the persisted entity
         BaseEntitySystemApi<?> service = componentRegistry.findEntitySystemApi(((BaseEntity) resource).getResourceName());
         if (service != null) {
             BaseEntity persistedEntity = service.find(entity.getId());
+            if (persistedEntity == null) {
+                // entity does not exist: it cannot be owned (or shared)
+                return false;
+            }
             // verify the owner
             if (persistedEntity instanceof OwnedResource ownedResource) {
                 resourceOwnerId = ownedResource.getOwnerUserId();
             } else {
-                // resource is not owned so check can pass
-                return (persistedEntity != null);
+                // non-owned protected entity: ownership not applicable, calculatePermission
+                // still ANDs this with the real permission check
+                return true;
             }
         }
-        return (resourceOwnerId != null && (user.getId() == resourceOwnerId.longValue() || userSharesResource));
+        // default-deny: null/0 owner means owned by nobody (H5)
+        if (resourceOwnerId == null || resourceOwnerId.longValue() == 0L)
+            return userSharesResource;
+        return user.getId() == resourceOwnerId.longValue() || userSharesResource;
     }
 
     /**
