@@ -175,6 +175,12 @@ Then reference them in `@AccessControl`:
 public class Product extends AbstractJpaEntity implements ProtectedEntity { }
 ```
 
+## Multitenancy (Company-based)
+
+Tenant check on single-entity (by-id) access.
+
+- `PermissionManagerDefault.checkUserOwnsResource` ANDs a tenant check (`checkEntityBelongsToActiveTenant`): a `TenantResource`'s `companyId` must be null or match the active company; a `MultiTenantResource`'s id must be in the resolver set. Runs AFTER the admin short-circuit and only when a company is active (lenient).
+
 ## Dependencies
 
 - **Core-api** — Base interfaces, `PermissionManager`, `SecurityContext`

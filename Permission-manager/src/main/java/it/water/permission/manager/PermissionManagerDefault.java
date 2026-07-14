@@ -19,9 +19,12 @@ package it.water.permission.manager;
 import it.water.core.api.action.Action;
 import it.water.core.api.action.ActionsManager;
 import it.water.core.api.action.ResourceAction;
+import it.water.core.api.bundle.Runtime;
 import it.water.core.api.entity.owned.OwnedChildResource;
 import it.water.core.api.entity.owned.OwnedResource;
 import it.water.core.api.entity.shared.SharedEntity;
+import it.water.core.api.entity.tenant.MultiTenantResource;
+import it.water.core.api.entity.tenant.TenantResource;
 import it.water.core.api.model.BaseEntity;
 import it.water.core.api.model.Resource;
 import it.water.core.api.model.Role;
@@ -30,11 +33,13 @@ import it.water.core.api.permission.Permission;
 import it.water.core.api.permission.PermissionManager;
 import it.water.core.api.permission.PermissionManagerComponentProperties;
 import it.water.core.api.permission.ProtectedEntity;
+import it.water.core.api.permission.SecurityContext;
 import it.water.core.api.registry.ComponentRegistry;
 import it.water.core.api.service.BaseEntitySystemApi;
 import it.water.core.api.service.integration.PermissionIntegrationClient;
 import it.water.core.api.service.integration.RoleIntegrationClient;
 import it.water.core.api.service.integration.SharedEntityIntegrationClient;
+import it.water.core.api.service.integration.TenantMembershipResolver;
 import it.water.core.api.service.integration.UserIntegrationClient;
 import it.water.core.interceptors.annotations.FrameworkComponent;
 import it.water.core.interceptors.annotations.Inject;
@@ -395,7 +400,93 @@ public class PermissionManagerDefault implements PermissionManager {
                 return false;
             }
         }
-        return doCheckUserOwnsResource(user, resourceOwnerId, resource, entity, userSharesResource);
+        boolean ownsResource = doCheckUserOwnsResource(user, resourceOwnerId, resource, entity, userSharesResource);
+        // A4: tenant gate on by-id access, ANDed as an ADDITIONAL necessary condition on top of the
+        // existing ownership result (never weakens it). Lenient/backward-compatible: enforced only when a
+        // company is active on the current SecurityContext. Admins already short-circuited above (and a
+        // non-scoped admin has a null active company anyway), so there is no isAdmin() special-casing here.
+        return ownsResource && checkEntityBelongsToActiveTenant(entity);
+    }
+
+    /**
+     * Additional by-id tenant check: verifies the persisted entity belongs to the active company.
+     * Reloads the entity from persistence (never trusts client-supplied fields) and denies cross-tenant
+     * access for tenant-aware entities.
+     * <p>
+     * Lenient rule: returns true (no enforcement) when there is no active company on the SecurityContext,
+     * for transient entities (id == 0), for non-existent entities (ownership check handles those), and for
+     * entities that are not tenant-aware.
+     *
+     * @param entity the entity being accessed by id
+     * @return true if access is allowed by the tenant rule, false to deny cross-tenant access
+     */
+    private boolean checkEntityBelongsToActiveTenant(BaseEntity entity) {
+        Long activeCompanyId = getActiveCompanyId();
+        //lenient rule: no active company => no tenant check => behaves exactly like today
+        if (activeCompanyId == null)
+            return true;
+        //transient entity: nothing persisted to check against yet
+        if (entity.getId() == 0)
+            return true;
+        BaseEntitySystemApi<?> service = componentRegistry.findEntitySystemApi(entity.getResourceName());
+        if (service == null)
+            return true;
+        BaseEntity persisted = service.find(entity.getId());
+        if (persisted == null)
+            //non-existent entity: cannot assess tenancy; ownership/existence checks already handle it
+            return true;
+        if (persisted instanceof TenantResource tenantResource) {
+            Long companyId = tenantResource.getCompanyId();
+            //null companyId = global/cross-tenant instance, visible to every tenant
+            return companyId == null || companyId.equals(activeCompanyId);
+        }
+        if (persisted instanceof MultiTenantResource) {
+            TenantMembershipResolver resolver = findTenantMembershipResolver(persisted.getResourceName());
+            if (resolver == null) {
+                //no resolver registered for this M:N type: do NOT deny (mirror the lenient Api-layer seam)
+                log.warn("No TenantMembershipResolver found for MultiTenantResource {}: by-id tenant check skipped", persisted.getResourceName());
+                return true;
+            }
+            Set<Long> ids = resolver.getEntityIdsInCompany(persisted.getResourceName(), activeCompanyId);
+            return ids != null && ids.contains(persisted.getId());
+        }
+        //not a tenant-aware entity: nothing to enforce
+        return true;
+    }
+
+    /**
+     * @return the active company id from the current SecurityContext (via the Runtime component), or null
+     * if there is no runtime/security context/active company. Null-safe: any lookup failure is treated as
+     * "no active company" (lenient), so a missing runtime never breaks a permission check.
+     */
+    private Long getActiveCompanyId() {
+        try {
+            Runtime runtime = componentRegistry.findComponent(Runtime.class, null);
+            if (runtime == null)
+                return null;
+            SecurityContext securityContext = runtime.getSecurityContext();
+            return (securityContext != null) ? securityContext.getActiveCompanyId() : null;
+        } catch (Exception e) {
+            log.debug("Unable to resolve Runtime/SecurityContext for tenant check, skipping: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Looks up the TenantMembershipResolver that supports the given resource type, if any.
+     *
+     * @param resourceName fully-qualified entity class name
+     * @return the matching resolver or null if none is registered
+     */
+    private TenantMembershipResolver findTenantMembershipResolver(String resourceName) {
+        List<TenantMembershipResolver> resolvers = componentRegistry.findComponents(TenantMembershipResolver.class, null);
+        if (resolvers != null) {
+            for (TenantMembershipResolver resolver : resolvers) {
+                if (resolver.supports(resourceName))
+                    return resolver;
+            }
+        }
+        return null;
     }
 
     private boolean resourceOwnerDoesNotMatch(Long resourceOwnerId, User user, boolean userSharesResource) {
