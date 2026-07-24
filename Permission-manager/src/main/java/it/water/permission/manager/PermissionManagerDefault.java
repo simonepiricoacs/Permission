@@ -99,7 +99,7 @@ public class PermissionManagerDefault implements PermissionManager {
             return false;
         Collection<String> rolesNamesCollection = Arrays.asList(rolesNames);
         User u = userIntegrationClient.fetchUserByUsername(username);
-        Collection<Role> roles = roleIntegrationClient.fetchUserRoles(u.getId());
+        Collection<Role> roles = filterRolesByActiveCompany(roleIntegrationClient.fetchUserRoles(u.getId()));
         //find user Roles
         return roles.stream().anyMatch(r -> rolesNamesCollection.contains(r.getName()));
     }
@@ -276,7 +276,7 @@ public class PermissionManagerDefault implements PermissionManager {
         if (user.isAdmin())
             return true;
 
-        Collection<Role> userRoles = roleIntegrationClient.fetchUserRoles(user.getId());
+        Collection<Role> userRoles = filterRolesByActiveCompany(roleIntegrationClient.fetchUserRoles(user.getId()));
 
         if (userRoles.isEmpty())
             return false;
@@ -305,7 +305,7 @@ public class PermissionManagerDefault implements PermissionManager {
         if (user.isAdmin())
             return true;
 
-        Collection<Role> userRoles = roleIntegrationClient.fetchUserRoles(user.getId());
+        Collection<Role> userRoles = filterRolesByActiveCompany(roleIntegrationClient.fetchUserRoles(user.getId()));
 
         if (userRoles.isEmpty())
             return false;
@@ -470,6 +470,33 @@ public class PermissionManagerDefault implements PermissionManager {
             log.debug("Unable to resolve Runtime/SecurityContext for tenant check, skipping: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Company-aware role filtering (DC-T1). Keeps only the roles visible for the active company:
+     * global roles ({@code companyId == null}) plus roles whose {@code companyId} matches the active
+     * company. Lenient rule: with no active company on the SecurityContext the roles are returned
+     * unchanged (single-tenant behaviour), so nothing changes when multitenancy is off. Roles that are
+     * not {@link TenantResource} are not company-scoped and stay visible.
+     *
+     * @param roles the roles resolved for the user (never filtered by company by the integration client)
+     * @return only the roles applicable to the active company
+     */
+    private Collection<Role> filterRolesByActiveCompany(Collection<Role> roles) {
+        Long activeCompanyId = getActiveCompanyId();
+        if (activeCompanyId == null || roles == null || roles.isEmpty())
+            return roles;
+        List<Role> visible = new ArrayList<>();
+        for (Role r : roles) {
+            if (r instanceof TenantResource tenantRole) {
+                Long companyId = tenantRole.getCompanyId();
+                if (companyId == null || companyId.equals(activeCompanyId))
+                    visible.add(r);
+            } else {
+                visible.add(r);
+            }
+        }
+        return visible;
     }
 
     /**
